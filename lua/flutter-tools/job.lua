@@ -73,24 +73,58 @@ function Job:close()
   end
 end
 
+---Check if this is the end of the output
+---@param data string[]
+---@return boolean
+local function is_EOF(data)
+  return #data == 1 and data[1] == ""
+end
+
+--[[
+Stream event handlers receive data as it becomes available from the OS,
+thus the first and last items in the {data} list may be partial lines.
+Empty string completes the previous partial line. Examples (not including
+  the final `['']` emitted at EOF):
+    - `foobar` may arrive as `['fo'], ['obar']`
+    - `foo\nbar` may arrive as
+      `['foo','bar']`
+      or `['foo',''], ['bar']`
+      or `['foo'], ['','bar']`
+      or `['fo'], ['o','bar']`
+
+There are two ways to deal with this:
+1. To wait for the entire output, use |channel-buffered| mode.
+2. To read line-by-line, use the following code: >
+
+    let s:lines = ['']
+    func! s:on_event(job_id, data, event) dict
+      let eof = (a:data == [''])
+      " Complete the previous line.
+      let s:lines[-1] .= a:data[0]
+      " Append (last item may be a partial line, until EOF).
+      call extend(s:lines, a:data[1:])
+    endf
+--]]
 ---Convert the table of results into a series of calls to on
 ---stderr or stdout with only a single line
 function Job:__process_result(_, data, name)
   if data and type(data) == "table" then
+    if is_EOF(data) then
+      return
+    end
     if data[#data] == "" then
       data[#data] = nil
     end
     if data[1] then
       self.result[#self.result] = self.result[#self.result] .. data[1]
     end
-    vim.list_extend(self.result, vim.list_slice(data, 2, #data))
-    for _, datum in ipairs(data) do
-      if datum then
-        if name == "stdout" and self.on_stdout then
-          self:on_stdout(datum)
-        elseif name == "stderr" and self.on_stderr then
-          self:on_stderr(datum)
-        end
+    vim.list_extend(self.result, data, 2)
+    local last_line = self.result[#self.result]
+    if last_line then
+      if name == "stdout" and self.on_stdout then
+        self:on_stdout(last_line)
+      elseif name == "stderr" and self.on_stderr then
+        self:on_stderr(last_line)
       end
     end
   end
